@@ -1,76 +1,56 @@
-import os
-import requests
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-
-# ---------- AI ----------
-def ask_ai(messages):
-    res = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "mistralai/mixtral-8x7b-instruct",
-            "messages": messages
-        }
-    )
-    return res.json()['choices'][0]['message']['content']
-
-
-# ---------- SEARCH ----------
-def search_articles(query):
-    url = f"https://api.duckduckgo.com/?q={query}&format=json"
-    data = requests.get(url).json()
-
-    results = []
-    for topic in data.get("RelatedTopics", [])[:5]:
-        if "Text" in topic:
-            results.append(topic["Text"])
-
-    return results
-
-
-# ---------- AGENT ----------
 def agent_task(task):
 
+    # 1. Планування
     plan = ask_ai([
-        {"role": "system", "content": "Розбий задачу на кроки."},
+        {"role": "system", "content": "Ти AI-агент. Створи план виконання задачі крок за кроком."},
         {"role": "user", "content": task}
     ])
 
-    articles = search_articles(task)
+    # 2. Витяг ключових запитів
+    queries = ask_ai([
+        {"role": "system", "content": "Виділи 3 пошукові запити для цієї задачі."},
+        {"role": "user", "content": task}
+    ]).split("\n")
 
-    summaries = []
-    for art in articles:
-        summary = ask_ai([
-            {"role": "system", "content": "Коротко поясни (1 речення)."},
-            {"role": "user", "content": art}
-        ])
-        summaries.append(f"- {summary}")
+    # 3. Пошук по кожному запиту
+    all_results = []
+    for q in queries[:3]:
+        try:
+            res = search_articles(q)
+            all_results.extend(res)
+        except:
+            pass
 
-    final = ask_ai([
-        {"role": "system", "content": "Зроби висновок і рекомендації."},
-        {"role": "user", "content": f"{plan}\n{summaries}"}
+    # 4. Аналіз
+    analysis = ask_ai([
+        {"role": "system", "content": "Проаналізуй інформацію і виділи головне."},
+        {"role": "user", "content": str(all_results)}
     ])
 
-    return f"📌 ПЛАН:\n{plan}\n\n📊 АНАЛІЗ:\n" + "\n".join(summaries) + f"\n\n✅ ВИСНОВОК:\n{final}"
+    # 5. Фінальне рішення
+    final = ask_ai([
+        {"role": "system", "content": "Дай конкретні дії і як заробити гроші з цього."},
+        {"role": "user", "content": f"""
+Задача: {task}
 
+План:
+{plan}
 
-# ---------- TELEGRAM ----------
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    reply = agent_task(text)
-    await update.message.reply_text(reply)
+Дані:
+{analysis}
+"""}
+    ])
 
+    return f"""
+📌 ПЛАН:
+{plan}
 
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT, handle))
+🔎 ПОШУК:
+{queries}
 
-print("Agent started...")
-app.run_polling()
+📊 АНАЛІЗ:
+{analysis}
+
+💰 РІШЕННЯ:
+{final}
+"""
